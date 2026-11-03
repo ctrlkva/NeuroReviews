@@ -1,7 +1,6 @@
 import os
 import time
 import json
-import uuid
 import torch
 import pandas as pd
 import streamlit as st
@@ -11,11 +10,17 @@ from peft import PeftModel, PeftConfig
 # Настройка страницы Streamlit
 st.set_page_config(page_title="Локальный генератор отзывов (FRED-T5)", layout="wide")
 
-# Пути к файлам данных и конфигурации модели
+# Константы путей и структуры данных
 CSV_FILE = "reviews.csv"
 JSON_FILE = "generated_reviews.json"
 BASE_MODEL_NAME = "ai-forever/FRED-T5-large"
-LORA_WEIGHTS_DIR = "./lora_output"  # Папка, куда скрипт train.py сохраняет веса
+LORA_WEIGHTS_DIR = "./lora_output"
+
+# Проверка наличия и автоматическое создание CSV-файла при старте приложения
+if not os.path.exists(CSV_FILE):
+    # Создаем пустой файл строго с теми колонками, которые вы оставили
+    df_init = pd.DataFrame(columns=["studentName", "courseName", "total_hours", "reviewText", "timestamp"])
+    df_init.to_csv(CSV_FILE, index=False, encoding="cp1251")
 
 # Инициализация состояний сессии
 if "generated_review" not in st.session_state:
@@ -24,21 +29,16 @@ if "generated_review" not in st.session_state:
 @st.cache_resource
 def load_model_and_tokenizer():
     """Загрузка токенизатора и модели FRED-T5 с поддержкой LoRA весов"""
-    # Выбор устройства выполнения: GPU (CUDA) если доступно, иначе CPU
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # FRED-T5 использует GPT2Tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained(BASE_MODEL_NAME, eos_token='<|endoftext|>', bos_token='<|endoftext|>')
     
     try:
-        # Пытаемся загрузить модель с сохраненными LoRA адаптерами
         if os.path.exists(LORA_WEIGHTS_DIR):
             config = PeftConfig.from_pretrained(LORA_WEIGHTS_DIR)
             base_model = T5ForConditionalGeneration.from_pretrained(config.base_model_name_or_path, torch_dtype=torch.float16 if device == "cuda" else torch.float32)
             model = PeftModel.from_pretrained(base_model, LORA_WEIGHTS_DIR)
             st.info("🚀 Загружена локальная модель FRED-T5 с дообученными LoRA-адаптерами.")
         else:
-            # Если папки с адаптерами нет, загружаем базовую предобученную модель
             model = T5ForConditionalGeneration.from_pretrained(BASE_MODEL_NAME, torch_dtype=torch.float16 if device == "cuda" else torch.float32)
             st.warning("⚠️ Адаптеры LoRA не найдены. Загружена базовая модель FRED-T5-large.")
     except Exception as e:
@@ -49,21 +49,13 @@ def load_model_and_tokenizer():
     model.eval()
     return model, tokenizer, device
 
-def format_prompt(student_name, course_name, rating_text, comment, history_records):
-    """Сборка структурированного шаблона входной последовательности согласно Этапу 1"""
-    history_context = "Нет"
-    if history_records:
-        history_context = " | ".join([r.get('reviewText', '').replace('\n', ' ') for r in history_records[-2:]])
-        
-    # Формируем строгий промпт, к которому привыкла модель FRED-T5 при обучении
-    prompt = (
-        f"<lm>Студент: {student_name}. Курс: {course_name}. Оценка: {rating_text}. "
-        f"Теги: {comment if comment else 'нет'.}. История: {history_context} </s>"
-    )
+def format_prompt(student_name, course_name, total_hours):
+    """Сборка структурированного шаблона входной последовательности под новый датасет"""
+    prompt = f"<lm>Студент: {student_name}. Курс: {course_name}. Прогресс: {total_hours} ч. </s>"
     return prompt
 
 def generate_review_local(model, tokenizer, device, prompt_text):
-    """Локальная генерация отзыва с жесткими параметрами декодирования (Этап 2)"""
+    """Локальная генерация отзыва по часам и курсу"""
     inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
     
     with torch.no_grad():
@@ -71,22 +63,19 @@ def generate_review_local(model, tokenizer, device, prompt_text):
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             max_length=512,
-            temperature=0.3,          # Низкая температура для строгого академического тона
-            top_p=0.9,                # Ограничение хвоста распределения токенов
-            repetition_penalty=2.5,   # Высокий штраф за циклические повторения текста
+            temperature=0.3,
+            top_p=0.9,
+            repetition_penalty=2.5,
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.pad_token_id
         )
     
-    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    # Очистка возможных артефактов тегов разметки T5
+    generated_text = tokenizer.decode(outputs, skip_special_tokens=True)
     generated_text = generated_text.replace("<lm>", "").replace("</s>", "").strip()
     return generated_text
 
 def load_student_history(student_name):
     """Загрузка истории отзывов по студенту из CSV"""
-    if not os.path.exists(CSV_FILE):
-        return []
     try:
         df = pd.read_csv(CSV_FILE, encoding="cp1251")
         df['studentName'] = df['studentName'].astype(str).str.strip()
@@ -96,29 +85,22 @@ def load_student_history(student_name):
         st.warning(f"Не удалось прочитать историю из CSV: {e}")
         return []
 
-def save_confirmed_review(student_name, course_name, review_text, rating, comment):
-    """Сохранение утвержденного отзыва в CSV и JSON файлы"""
+def save_confirmed_review(student_name, course_name, total_hours, review_text):
+    """Сохранение утвержденного отзыва в файлы"""
     new_row = pd.DataFrame([{
         "studentName": student_name,
         "courseName": course_name,
+        "total_hours": total_hours,
         "reviewText": review_text,
-        "rating": rating,
-        "comment": comment,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }])
     
-    if os.path.exists(CSV_FILE):
-        try:
-            df = pd.read_csv(CSV_FILE, encoding="cp1251")
-            df = pd.concat([df, new_row], ignore_index=True)
-            df.to_csv(CSV_FILE, index=False, encoding="cp1251")
-        except Exception as e:
-            st.error(f"Ошибка записи в CSV: {e}")
-    else:
-        try:
-            new_row.to_csv(CSV_FILE, index=False, encoding="cp1251")
-        except Exception as e:
-            st.error(f"Ошибка создания CSV: {e}")
+    try:
+        df = pd.read_csv(CSV_FILE, encoding="cp1251")
+        df = pd.concat([df, new_row], ignore_index=True)
+        df.to_csv(CSV_FILE, index=False, encoding="cp1251")
+    except Exception as e:
+        st.error(f"Ошибка записи в CSV: {e}")
 
     json_data = []
     if os.path.exists(JSON_FILE):
@@ -131,9 +113,8 @@ def save_confirmed_review(student_name, course_name, review_text, rating, commen
     json_data.append({
         "studentName": student_name,
         "courseName": course_name,
+        "total_hours": total_hours,
         "reviewText": review_text,
-        "rating": rating,
-        "comment": comment,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     })
     
@@ -143,10 +124,9 @@ def save_confirmed_review(student_name, course_name, review_text, rating, commen
     except Exception as e:
         st.error(f"Ошибка записи в JSON: {e}")
 
-# Загрузка локальных тяжелых ресурсов один раз при старте
+# Инициализация тяжелых ресурсов
 model, tokenizer, device = load_model_and_tokenizer()
 
-# Заголовок интерфейса
 st.title("✍️ Локальный генератор отзывов на студентов")
 
 if model is None:
@@ -159,52 +139,41 @@ else:
         
         student_name = st.selectbox(
             "Студент", 
-            ["Тимофеев Мирон", "Студент 1", "Студент 2", "Студент 3", "Студент 4", "Студент 5"],
+            ["Тимофеев Мирон", "Лебедев Ярослав", "Петрова Виктория", "Новикова Екатерина", "Смирнова Анастасия"],
             index=0
         )
         
         course_name = st.selectbox(
             "Курс",
-            ["Майнкрафт", "Scratch", "Python", "Python 2", "Роблокс"],
-            index=2
+            ["Python Ур.1", "Scratch", "3D", "Роблокс"],
+            index=1
         )
         
-        rating_options = {5: "5 — Отлично", 4: "4 — Хорошо", 3: "3 — Плохо"}
-        rating = st.radio(
-            "Оценка за спринт",
-            options=list(rating_options.keys()),
-            format_func=lambda x: rating_options[x],
-            horizontal=True
-        )
-        
-        comment = st.text_area(
-            "Черновик комментария (теги преподавателя)", 
-            placeholder="Например: занимался хорошо, сдал проект вовремя, нужно повторить циклы..."
+        # Новый числовой инпут вместо текстовых комментариев
+        total_hours = st.number_input(
+            "Общий прогресс по курсу (в часах)", 
+            min_value=1, 
+            max_value=300, 
+            value=16, 
+            step=1
         )
         
         if st.button("Сгенерировать отзыв локально", type="primary"):
-            history_records = load_student_history(student_name)
-            
-            # 1. Форматирование строгого промпта для локальной модели
             prompt_text = format_prompt(
                 student_name=student_name,
                 course_name=course_name,
-                rating_text=rating_options[rating],
-                comment=comment,
-                history_records=history_records
+                total_hours=total_hours
             )
 
-            # 2. Локальный инференс без вызова сторонних API
             with st.spinner("Локальная модель FRED-T5 генерирует текст отзыва..."):
                 try:
                     start_time = time.time()
                     st.session_state.generated_review = generate_review_local(model, tokenizer, device, prompt_text)
                     generation_time = time.time() - start_time
-                    st.success(f"Готово! Время генерации: {generation_time:.2s} сек. (Устройство: {device.upper()})")
+                    st.success(f"Готово! Время генерации: {generation_time:.2f} сек.")
                 except Exception as e:
                     st.error(f"Ошибка локального инференса: {e}")
 
-        # Блок редактирования и сохранения результата
         if st.session_state.generated_review:
             st.markdown("---")
             st.subheader("🤖 Результат генерации")
@@ -222,20 +191,19 @@ else:
                     st.rerun()
             with col_btn2:
                 if st.button("✅ Подтвердить и сохранить", type="primary"):
-                    save_confirmed_review(student_name, course_name, edited_review, rating, comment)
+                    save_confirmed_review(student_name, course_name, total_hours, edited_review)
                     st.success("Отзыв сохранен!")
                     st.session_state.generated_review = ""
                     st.rerun()
 
-    # Правая колонка: Просмотр истории из CSV
     with col_history:
         st.subheader("📚 Последние отзывы студента")
         history = load_student_history(student_name)
         
         if history:
-            for idx, record in enumerate(reversed(history)):
-                with st.expander(f"Отзыв от {record.get('timestamp', 'Неизвестно')} (Оценка: {record.get('rating', '-')})"):
-                    st.caption(f"**Курс:** {record.get('courseName', '')} | **Заметки:** {record.get('comment', '')}")
+            for record in reversed(history):
+                with st.expander(f"Отзыв от {record.get('timestamp', 'Неизвестно')}"):
+                    st.caption(f"**Курс:** {record.get('courseName', '')} | **Пройдено часов:** {record.get('total_hours', '0')}")
                     st.write(record.get('reviewText', ''))
         else:
             st.info("История отзывов для этого студента в CSV пока отсутствует.")
