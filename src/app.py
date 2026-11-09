@@ -122,7 +122,7 @@ with col_ui:
     """
 
     # Рендеринг HTML-окна как интерактивного компонента
-    form_result = components.html(html_form, height=450, scroller=False)
+form_result = components.html(html_form, height=450, scrolling=False)
 
 with col_preview:
     st.subheader("Генерация...")
