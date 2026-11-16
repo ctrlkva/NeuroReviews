@@ -13,7 +13,7 @@ def main():
     BASE_DIR = Path(__file__).resolve().parent
     MODEL_PATH = BASE_DIR.parent / "models" / "FRED-T5-large"
     DATASET_PATH = BASE_DIR.parent / "data" / "perfect_reviews_train.csv"
-    OUTPUT_DIR = BASE_DIR.parent / "src" / "lora_output"
+    OUTPUT_DIR = BASE_DIR.parent / "models" / "lora_output"
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Запуск процесса обучения на устройстве: {device}")
