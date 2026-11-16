@@ -79,7 +79,6 @@ def main():
     with col_form:
         st.subheader("Параметры отзыва")
 
-        # Выбор студента и курса вынесен НАД формой для мгновенной фильтрации курсов
         if not df.empty and "studentName" in df.columns:
             students_list = sorted(df["studentName"].dropna().astype(str).unique().tolist())
             selected_student = st.selectbox("Студент:", students_list)
@@ -101,17 +100,15 @@ def main():
             selected_student = st.text_input("Имя студента (вручную):")
             selected_course = st.text_input("Название курса (вручную):")
 
-        # Форма для оценки, комментария и отправки на генерацию
-        with st.form(key="review_form"):
-            rating = st.slider("Оценка:", min_value=1, max_value=5, value=5)
+        rating = st.slider("Оценка:", min_value=1, max_value=5, value=5)
 
-            comment = st.text_area(
-                "Комментарий преподавателя / Базовый текст:",
-                height=150,
-                key="review_text_area"
-            )
+        comment = st.text_area(
+            "Комментарий преподавателя / Базовый текст:",
+            height=150,
+            key="review_text_area"
+        )
 
-            submit_button = st.button(label="🤖 Сгенерировать отзыв", type="primary")
+        submit_button = st.button(label="🤖 Сгенерировать отзыв", type="primary")
 
 
     with col_tags:
