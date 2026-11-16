@@ -32,9 +32,9 @@ def get_csv_path() -> Path:
     if DEFAULT_CSV_PATH.exists():
         return DEFAULT_CSV_PATH
     if DATA_DIR.exists():
-        csv_files = list(DATA_DIR.glob("*.csv"))
-        if csv_files:
-            return csv_files
+        first_csv = next(DATA_DIR.glob("*.csv"), None)
+        if first_csv is not None:
+            return first_csv
     return DEFAULT_CSV_PATH
 
 
@@ -74,7 +74,7 @@ def main():
     if "generated_review" not in st.session_state:
         st.session_state["generated_review"] = ""
 
-    col_form, col_tags = st.columns()
+    col_form, col_tags = st.columns(2)
 
     with col_form:
         st.subheader("Параметры отзыва")
@@ -185,7 +185,7 @@ def main():
                                 repetition_penalty=1.2,
                                 early_stopping=True
                             )
-                        st.session_state["generated_review"] = tokenizer.decode(outputs, skip_special_tokens=True)
+                        st.session_state["generated_review"] = tokenizer.decode(outputs.squeeze(0), skip_special_tokens=True)
                     except Exception as e:
                         st.session_state["generated_review"] = f"Ошибка генерации модели: {str(e)}"
                 else:
