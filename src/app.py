@@ -111,7 +111,8 @@ def main():
                 key="review_text_area"
             )
 
-            submit_button = st.form_submit_button(label="🤖 Сгенерировать отзыв")
+            submit_button = st.button(label="🤖 Сгенерировать отзыв", type="primary")
+
 
     with col_tags:
         st.subheader("Быстрые теги")
