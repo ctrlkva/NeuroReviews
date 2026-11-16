@@ -226,5 +226,5 @@ def main():
             except Exception as e:
                 st.error(f"Не удалось сохранить файл: {str(e)}")
                 
-if name == "main":
+if __name__ == "__main__":
     main()
